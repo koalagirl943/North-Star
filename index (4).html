@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="North Star guides people home safe at night: real 24-hour safe spots, real street light data, and a check-in timer that alerts a friend.">
+<title>North Star</title>
+
+<!-- Leaflet 1.9.4: a free, open-source library for drawing maps.
+     It's saved in the "leaflet" folder next to this file. -->
+<link rel="stylesheet" href="leaflet/leaflet.css">
+<script src="leaflet/leaflet.js"></script>
+
+<style>
+  /* =====================================================
+     COLORS
+     All colors live here so they're easy to change.
+     ===================================================== */
+  :root {
+    --bg: #060a1f;         /* deep midnight sky */
+    --card: rgba(19, 26, 56, 0.92);
+    --input: #0b1130;
+    --text: #eef1fb;
+    --muted: #b8c1dc;      /* light enough to pass contrast checks on dark cards */
+    --glow: #f7e7a6;       /* pale starlight gold */
+    --star-blue: #a5b4fc;  /* cool starlight blue for routes */
+    --safe: #22c55e;
+    --safe-text: #062b12;
+    --danger: #ef4444;
+    --border: #2f3a5e;
+    --focus: #7dd3fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background-color: var(--bg);
+    /* A starfield made of tiny glowing dots */
+    background-image:
+      radial-gradient(1.5px 1.5px at 20px 30px, #fff, transparent),
+      radial-gradient(1px 1px at 90px 120px, #dbe4ff, transparent),
+      radial-gradient(1.5px 1.5px at 160px 60px, #fff8dc, transparent),
+      radial-gradient(1px 1px at 230px 170px, #fff, transparent),
+      radial-gradient(1px 1px at 300px 40px, #c7d2fe, transparent),
+      radial-gradient(ellipse at top, #1a2150 0%, transparent 60%);
+    background-size: 320px 220px, 320px 220px, 320px 220px, 320px 220px, 320px 220px, 100% 100%;
+    background-attachment: fixed;
+    color: var(--text);
+    font-size: 17px;
+    line-height: 1.5;
+  }
+
+  /* Clear focus ring so keyboard users always see where they are */
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+  /* Hidden visually, but still read by screen readers */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  /* "Skip to controls" link appears when you press Tab */
+  .skip-link {
+    position: absolute; left: 8px; top: -60px; z-index: 2000;
+    background: var(--glow); color: #000; padding: 10px 14px;
+    border-radius: 8px; font-weight: 700; text-decoration: none;
+  }
+  .skip-link:focus { top: 8px; }
+
+  header { padding: 14px 16px 8px; text-align: center; }
+  header h1 {
+    margin: 0; font-size: 1.9em; color: var(--glow); letter-spacing: 0.04em;
+    text-shadow: 0 0 18px rgba(247, 231, 166, 0.55);
+  }
+  /* The star in the title gently twinkles */
+  .title-star { display: inline-block; animation: twinkle 2.6s ease-in-out infinite; }
+  @keyframes twinkle {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.55; transform: scale(0.85); }
+  }
+  header p { margin: 2px 0 0; color: var(--muted); }
+
+  /* Settings bar */
+  .a11y-bar { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; padding: 6px 16px 12px; }
+  .toggle {
+    min-height: 44px; padding: 8px 14px; font-size: 0.9em; font-weight: 600;
+    background: var(--card); color: var(--text);
+    border: 2px solid var(--border); border-radius: 999px; cursor: pointer;
+  }
+  .toggle[aria-pressed="true"] { background: var(--glow); color: #000; border-color: var(--glow); }
+
+  /* ---------- Map ---------- */
+  #map { height: 45vh; min-height: 300px; width: 100%; }
+  /* Round map pins with a letter: P police, F fire, H hospital, S store... */
+  .pin {
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 13px; background: #0b1130;
+    border: 2px solid currentColor; box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+  }
+  .inline-pin { display: inline-flex; width: 28px; height: 28px; margin-right: 8px; vertical-align: middle; font-size: 12px; }
+  .pin-police   { color: #93c5fd; }
+  .pin-fire     { color: #fca5a5; }
+  .pin-hospital { color: #f9a8d4; }
+  .pin-store    { color: #86efac; }
+  .pin-report   { color: #fff; background: #b91c1c; border-color: #fecaca; font-size: 18px; }
+  /* Backup map: darken the normal OpenStreetMap tiles */
+  .osm-dark .leaflet-tile-pane { filter: invert(1) hue-rotate(200deg) brightness(0.85) contrast(0.9); }
+  /* "You are here" is a glowing star */
+  .you-pin {
+    font-size: 28px; line-height: 28px; text-align: center; color: #fff8dc;
+    text-shadow: 0 0 8px #f7e7a6, 0 0 18px #f7e7a6, 0 0 28px #a5b4fc;
+  }
+  .north-badge {
+    display: inline-block; margin-bottom: 4px; padding: 2px 10px;
+    background: var(--glow); color: #000; border-radius: 999px;
+    font-size: 0.8em; font-weight: 800;
+  }
+  .leaflet-container { font-size: 15px; background: #1e2028; }
+  /* Dark-themed map buttons and credits */
+  .leaflet-bar a, .leaflet-bar a:hover { background: #151c33; color: #f7e7a6; border-color: #2f3a5e; }
+  .leaflet-control-attribution { background: rgba(6, 10, 31, 0.8) !important; color: #b8c1dc; }
+  .leaflet-control-attribution a { color: #f7e7a6; }
+  .status a { color: var(--glow); font-weight: 700; }
+
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+
+  /* ---------- Location search ---------- */
+  .search-row { display: flex; gap: 8px; }
+  .search-row input { flex: 1; }
+  .search-row button.big { width: auto; flex: 0 0 auto; margin-top: 4px; padding: 0 22px; }
+  .search-row input { min-width: 0; }
+
+  /* ---------- Tabs ---------- */
+  .tabs { display: flex; gap: 6px; margin: 14px 0 12px; }
+  .tab {
+    flex: 1; min-height: 52px; padding: 10px 6px; font-size: 0.95em; font-weight: 700;
+    background: var(--card); color: var(--text);
+    border: 2px solid var(--border); border-radius: 12px; cursor: pointer;
+  }
+  .tab[aria-selected="true"] { background: var(--glow); color: #000; border-color: var(--glow); }
+
+  .card {
+    background: var(--card);
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 12px;
+  }
+  [hidden] { display: none !important; }
+  h2 { margin: 0 0 8px; font-size: 1.3em; }
+  h3 { margin: 0; font-size: 1.1em; }
+  .muted { color: var(--muted); font-size: 0.9em; }
+
+  button.big {
+    width: 100%; min-height: 52px; padding: 14px; margin-top: 10px;
+    font-size: 1.05em; font-weight: 700;
+    border: none; border-radius: 12px; cursor: pointer;
+    background: var(--glow); color: #000;
+  }
+  button.green { background: var(--safe); color: var(--safe-text); }
+  button.outline { background: transparent; color: var(--text); border: 2px solid var(--border); }
+  button.small { width: auto; min-height: 44px; padding: 8px 14px; font-size: 0.9em; margin-top: 8px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 180px; }
+
+  label { display: block; margin-top: 10px; font-weight: 700; }
+  input, select, textarea {
+    width: 100%; min-height: 48px; padding: 12px; margin-top: 4px;
+    font-size: 1em; font-family: inherit;
+    background: var(--input); color: var(--text);
+    border: 2px solid var(--border); border-radius: 10px;
+  }
+  textarea { min-height: 180px; }
+  .checkbox-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-weight: 600; }
+  .checkbox-row input { width: 24px; height: 24px; min-height: 0; margin: 0; }
+
+  /* ---------- Timer ---------- */
+  .timer {
+    font-size: 64px; font-weight: 800; text-align: center;
+    font-variant-numeric: tabular-nums;
+    color: var(--glow);
+  }
+  .alert-box {
+    background: #3b0d12; border: 3px solid var(--danger);
+    border-radius: 14px; padding: 16px; margin-top: 12px;
+  }
+  .alert-box h3 { color: #fecaca; margin-bottom: 6px; }
+  .msg-preview {
+    background: var(--input); border-radius: 10px; padding: 10px;
+    font-size: 0.9em; white-space: pre-wrap; word-break: break-word;
+  }
+  a.big-link {
+    display: block; text-align: center; text-decoration: none;
+    min-height: 52px; padding: 14px; margin-top: 10px; border-radius: 12px;
+    font-size: 1.05em; font-weight: 700;
+    background: var(--danger); color: #fff;
+  }
+
+  /* ---------- Spot list ---------- */
+  .spot-list { list-style: none; padding: 0; margin: 12px 0 0; }
+  .spot-list li {
+    border-left: 5px solid var(--safe);
+    background: var(--input);
+    border-radius: 10px; padding: 12px; margin-bottom: 10px;
+  }
+  .spot-list li.nearest { border-left-color: var(--glow); }
+  .spot-list a { color: var(--glow); font-weight: 600; }
+  .status { margin: 4px 0; color: var(--glow); font-size: 0.95em; min-height: 1.5em; }
+  ul.legend { padding-left: 0; list-style: none; }
+  ul.legend li { margin: 4px 0; }
+  .lamp-dot {
+    display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    background: #ffd166; box-shadow: 0 0 8px #ffd166; vertical-align: middle;
+  }
+  .lit-line { display: inline-block; width: 26px; height: 5px; background: #ffd166; opacity: .7; vertical-align: middle; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<a class="skip-link" href="#controls">Skip to app controls</a>
+
+<header>
+  <h1><span class="title-star" aria-hidden="true">✦</span> North Star</h1>
+  <p>Follow your star home. Real safe spots nearby, and a friend who knows you made it.</p>
+</header>
+
+<!-- Settings -->
+<div class="a11y-bar" role="group" aria-label="Settings">
+  <button class="toggle" id="speakBtn" aria-pressed="true">Spoken alerts</button>
+</div>
+
+<div id="map" role="region" aria-label="Map of safe spots and street lights. All information on the map is also listed in the Safe Spots tab."></div>
+
+<main id="controls" tabindex="-1">
+  <!-- Screen readers hear updates from this area automatically -->
+  <div class="status" id="locStatus" role="status" aria-live="polite">Finding your location...</div>
+
+  <!-- Location: search an address, use GPS, or tap the map -->
+  <div class="card">
+    <label for="searchBox">Search an address or place</label>
+    <form class="search-row" id="searchForm">
+      <input id="searchBox" type="search" placeholder="e.g. 100 Main St, or a school name" autocomplete="street-address">
+      <button class="big" type="submit">Go</button>
+    </form>
+    <div class="row">
+      <button class="big outline small" id="gpsBtn">Use my current location</button>
+      <button class="big outline small" id="setLocBtn" aria-pressed="false">Tap the map to set my location</button>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="North Star sections">
+    <button class="tab" role="tab" id="tabbtn-checkin" aria-controls="tab-checkin" aria-selected="true" data-tab="checkin">Check-In</button>
+    <button class="tab" role="tab" id="tabbtn-safe" aria-controls="tab-safe" aria-selected="false" tabindex="-1" data-tab="safe">Safe Spots</button>
+    <button class="tab" role="tab" id="tabbtn-report" aria-controls="tab-report" aria-selected="false" tabindex="-1" data-tab="report">Lights</button>
+  </div>
+
+  <!-- ===== CHECK-IN TAB ===== -->
+  <section id="tab-checkin" role="tabpanel" aria-labelledby="tabbtn-checkin">
+    <div class="card" id="checkinSetup">
+      <h2>Walking home?</h2>
+      <p class="muted">Tell North Star how long your walk should take. If you don't tap "I'm home safe" in time, you'll get an alert ready to send to your friend with your last location.</p>
+      <label for="friendName">Friend's name</label>
+      <input id="friendName" placeholder="e.g. Mom, Jordan" autocomplete="off">
+      <label for="friendPhone">Friend's phone number</label>
+      <input id="friendPhone" type="tel" inputmode="tel" placeholder="e.g. 555-123-4567" autocomplete="off">
+      <label for="minutes">I'll be home in...</label>
+      <select id="minutes">
+        <option value="0.5">30 seconds (demo)</option>
+        <option value="5">5 minutes</option>
+        <option value="10">10 minutes</option>
+        <option value="15" selected>15 minutes</option>
+        <option value="20">20 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="45">45 minutes</option>
+      </select>
+      <p class="muted" id="formError" role="alert"></p>
+      <button class="big" id="startBtn">Start walking</button>
+    </div>
+
+    <div class="card" id="checkinRunning" hidden>
+      <p class="muted" style="text-align:center;margin:0" id="runningText"></p>
+      <div class="timer" id="timerDisplay" aria-hidden="true">00:00</div>
+      <p class="sr-only" id="timerSR" aria-live="polite"></p>
+      <button class="big green" id="homeBtn">I'm home safe</button>
+      <div class="row">
+        <button class="big outline" id="extendBtn">+5 minutes</button>
+        <button class="big outline" id="nearestFromTimer">Nearest safe spot</button>
+      </div>
+      <div id="alertArea" role="alert"></div>
+    </div>
+
+    <div class="card" id="checkinDone" hidden>
+      <h2>You made it home!</h2>
+      <p class="muted">Timer stopped. No alert was sent.</p>
+      <button class="big" id="newWalkBtn">Start a new walk</button>
+    </div>
+  </section>
+
+  <!-- ===== SAFE SPOTS TAB ===== -->
+  <section id="tab-safe" role="tabpanel" aria-labelledby="tabbtn-safe" hidden>
+    <div class="card">
+      <h2>Safe spots near you</h2>
+      <p class="muted">Real places from OpenStreetMap that are open 24 hours or always staffed: police and fire stations, hospitals, and 24-hour stores, gas stations, pharmacies, and restaurants.</p>
+      <button class="big" id="nearestBtn">Route me to the nearest safe spot</button>
+      <p class="status" id="spotStatus" aria-live="polite"></p>
+      <ul class="spot-list" id="spotList" aria-label="Nearby safe spots, closest first"></ul>
+    </div>
+  </section>
+
+  <!-- ===== LIGHTS TAB ===== -->
+  <section id="tab-report" role="tabpanel" aria-labelledby="tabbtn-report" hidden>
+    <div class="card">
+      <h2>Street lights near you</h2>
+      <p class="muted">Real street lamp and lit-road data from OpenStreetMap, shown on the map so you can pick brighter streets.</p>
+      <div class="checkbox-row">
+        <input type="checkbox" id="showLights" checked>
+        <label for="showLights" style="margin:0">Show street lights on the map</label>
+      </div>
+      <p class="status" id="lightStatus" aria-live="polite"></p>
+      <ul class="legend">
+        <li><span class="lamp-dot" aria-hidden="true"></span> Street lamp</li>
+        <li><span class="lit-line" aria-hidden="true"></span> Road marked as lit at night</li>
+        <li><span class="pin inline-pin pin-report" aria-hidden="true">×</span>Broken light you reported</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Report a broken streetlight</h2>
+      <p class="muted">Mark broken lights, then send one letter to your city to get them fixed.</p>
+      <button class="big" id="reportModeBtn" aria-pressed="false">Tap the map to report a broken light</button>
+      <button class="big outline" id="reportHereBtn">Report a broken light where I am now</button>
+      <p id="reportCount" class="muted" aria-live="polite"></p>
+      <div class="row">
+        <button class="big outline" id="letterBtn">Write letter to city</button>
+        <button class="big outline" id="clearBtn">Clear my reports</button>
+      </div>
+      <div id="letterArea"></div>
+    </div>
+  </section>
+
+  <p class="muted">Map data © OpenStreetMap contributors. North Star is a helper, not an emergency service. If you are in danger, call 911.</p>
+</main>
+
+<script>
+// =====================================================
+// 0. BACKUP PLAN IF THE MAP LIBRARY CAN'T LOAD
+// Some school or work networks block map websites. If that
+// happens, we swap in a "do nothing" stand-in for the map so
+// the check-in timer, safe-spot list, and letter still work.
+// =====================================================
+if (typeof window.L === "undefined") {
+  const noop = () => fake;
+  const fake = new Proxy(function () {}, {
+    get: (t, prop) => prop === "getBounds" ? () => null : noop,
+    apply: () => fake
+  });
+  window.L = fake;
+  document.getElementById("map").innerHTML =
+    "<p style='padding:16px'>The map couldn't load on this network, but everything else still works. " +
+    "Safe spots are listed in the Safe Spots tab.</p>";
+  document.getElementById("map").style.height = "auto";
+  document.getElementById("map").style.minHeight = "0";
+}
+
+// =====================================================
+// 1. SMALL HELPERS
+// =====================================================
+
+// Save and load data in this browser. Wrapped in try/catch
+// because storage can be blocked in private browsing.
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+function load(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch (e) { return fallback; }
+}
+
+// Make text safe to put inside HTML (stops names from map data running as code)
+function escapeHTML(str) {
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// fetch() with a time limit, so the app never hangs on a slow server
+async function fetchWithTimeout(url, options = {}, ms = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    if (!res.ok) throw new Error("Server error " + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Distance between two points on Earth in kilometers (haversine formula)
+function distanceKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+const kmToMiles = km => km * 0.621371;
+
+// =====================================================
+// 2. SPOKEN ALERTS SETTING
+// =====================================================
+const settings = load("nl_settings", { speak: true });
+
+function applySettings() {
+  document.getElementById("speakBtn").setAttribute("aria-pressed", settings.speak);
+  save("nl_settings", settings);
+}
+document.getElementById("speakBtn").onclick = () => { settings.speak = !settings.speak; applySettings(); };
+applySettings();
+
+// Read text out loud (for blind and low-vision users, or when the phone is in a pocket)
+function speak(text) {
+  if (!settings.speak || !("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  } catch (e) {}
+}
+
+function setStatus(id, text) { document.getElementById(id).textContent = text; }
+
+// =====================================================
+// 3. THE MAP
+// A dark map, built on OpenStreetMap data.
+// =====================================================
+const DEFAULT_CENTER = [38.8899, -77.0091];   // US Capitol, used if location is unavailable
+const map = L.map("map").setView(DEFAULT_CENTER, 15);
+// Dark map from Esri. It's free and doesn't need an account key.
+const baseTiles = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19,
+  maxNativeZoom: 16,
+  attribution: "Tiles &copy; Esri &mdash; Map data &copy; OpenStreetMap contributors"
+}).addTo(map);
+// Street names and labels on top of the dark map
+L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19,
+  maxNativeZoom: 16
+}).addTo(map);
+
+// Backup: if the Esri map fails to load, switch to OpenStreetMap's
+// own map and darken it with a CSS filter.
+let tileErrors = 0, switchedTiles = false;
+baseTiles.on("tileerror", () => {
+  tileErrors++;
+  if (tileErrors > 4 && !switchedTiles) {
+    switchedTiles = true;
+    map.eachLayer(layer => { if (layer instanceof L.TileLayer) map.removeLayer(layer); });
+    document.getElementById("map").classList.add("osm-dark");
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+  }
+});
+
+const spotLayer = L.layerGroup().addTo(map);
+const lightLayer = L.layerGroup().addTo(map);
+const reportLayer = L.layerGroup().addTo(map);
+const routeLayer = L.layerGroup().addTo(map);
+
+let userLat = null, userLng = null;
+let userMarker = null;
+let spots = [];
+let mapMode = "none";   // "none", "setLocation", or "report"
+
+// A round map pin with a short letter label, like "P" for police
+function pinIcon(text, cls, label) {
+  return L.divIcon({
+    html: '<div class="pin ' + cls + '" role="img" aria-label="' + escapeHTML(label) + '">' + escapeHTML(text) + "</div>",
+    className: "", iconSize: [30, 30], iconAnchor: [15, 15]
+  });
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// =====================================================
+// 4. SETTING THE USER'S LOCATION
+// Three ways: GPS, searching an address, or tapping the map.
+// =====================================================
+function setUserLocation(lat, lng, message) {
+  userLat = lat;
+  userLng = lng;
+  if (userMarker) map.removeLayer(userMarker);
+  userMarker = L.marker([lat, lng], {
+    icon: L.divIcon({ html: "<div class='you-pin'>✦</div>", className: "", iconSize: [28, 28] }),
+    alt: "Your location", keyboard: true
+  }).addTo(map).bindPopup("You are here");
+  map.setView([lat, lng], 16);
+  setStatus("locStatus", message);
+  loadArea();
+}
+
+function useGPS() {
+  if (!navigator.geolocation) {
+    setUserLocation(DEFAULT_CENTER[0], DEFAULT_CENTER[1],
+      "Location isn't supported on this device. Showing a demo area. Search an address above.");
+    return;
+  }
+  setStatus("locStatus", "Finding your location...");
+  navigator.geolocation.getCurrentPosition(
+    pos => setUserLocation(pos.coords.latitude, pos.coords.longitude, "Using your current location."),
+    () => {
+      if (userLat === null) {
+        setUserLocation(DEFAULT_CENTER[0], DEFAULT_CENTER[1],
+          "Location is blocked, so this is a demo area (Washington, DC). Allow location in your browser, or search an address above.");
+      } else {
+        setStatus("locStatus", "Couldn't get your location. Search an address instead.");
+      }
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+// Two free address-search services: Nominatim first, Photon as a backup.
+async function geocodeNominatim(query) {
+  const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(query);
+  const results = await fetchWithTimeout(url, { headers: { "Accept-Language": "en" } }, 10000);
+  if (results.length === 0) return null;
+  return { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon),
+           name: results[0].display_name.split(",").slice(0, 3).join(",") };
+}
+async function geocodePhoton(query) {
+  const url = "https://photon.komoot.io/api/?limit=1&lang=en&q=" + encodeURIComponent(query);
+  const data = await fetchWithTimeout(url, {}, 10000);
+  if (!data.features || data.features.length === 0) return null;
+  const f = data.features[0];
+  const p = f.properties || {};
+  const name = [p.name, p.street, p.city, p.state].filter(Boolean).join(", ");
+  return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], name: name || query };
+}
+
+async function searchAddress(query) {
+  if (!navigator.onLine) {
+    setStatus("locStatus", "You seem to be offline. Connect to the internet to search.");
+    return;
+  }
+  setStatus("locStatus", "Searching for \"" + query + "\"...");
+  let place = null, anyServiceWorked = false;
+  for (const service of [geocodeNominatim, geocodePhoton]) {
+    try {
+      place = await service(query);
+      anyServiceWorked = true;
+      if (place) break;
+    } catch (e) { /* try the next service */ }
+  }
+  if (place) {
+    setUserLocation(place.lat, place.lng, "Showing: " + place.name);
+  } else if (anyServiceWorked) {
+    setStatus("locStatus", "No place found for \"" + query + "\". Try adding a city and state.");
+  } else {
+    setStatus("locStatus", "Search couldn't connect. Check your internet, or tap the map to set your spot.");
+  }
+}
+
+document.getElementById("searchForm").onsubmit = e => {
+  e.preventDefault();
+  const q = document.getElementById("searchBox").value.trim();
+  if (q) searchAddress(q);
+};
+document.getElementById("gpsBtn").onclick = useGPS;
+
+// =====================================================
+// 5. REAL SAFE SPOTS AND STREET LIGHTS (OpenStreetMap Overpass API)
+// Overpass lets us ask: "find every police station, fire station,
+// hospital, 24/7 business, and street lamp near this point."
+// We ask for everything in ONE request, because the free servers
+// block people who send several requests at the same time.
+// =====================================================
+const OVERPASS_SERVERS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+];
+
+// Requests wait in line so only one runs at a time
+let overpassQueue = Promise.resolve();
+function overpass(query) {
+  const run = overpassQueue.then(() => overpassNow(query));
+  overpassQueue = run.catch(() => {});
+  return run;
+}
+
+// Try each server until one answers
+async function overpassNow(query) {
+  let lastError;
+  for (const server of OVERPASS_SERVERS) {
+    try {
+      return await fetchWithTimeout(server, {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }
+      }, 20000);
+    } catch (e) {
+      lastError = e;
+      await sleep(500);
+    }
+  }
+  throw lastError;
+}
+
+function areaQuery(lat, lng, spotRadius, includeLights) {
+  const near = r => "(around:" + r + "," + lat + "," + lng + ")";
+  let q = "[out:json][timeout:25];(" +
+    'nwr["amenity"~"^(police|fire_station|hospital)$"]' + near(spotRadius) + ";" +
+    'nwr["opening_hours"="24/7"]["shop"~"^(convenience|supermarket|kiosk)$"]' + near(spotRadius) + ";" +
+    'nwr["opening_hours"="24/7"]["amenity"~"^(fuel|pharmacy|fast_food|restaurant|cafe)$"]' + near(spotRadius) + ";" +
+    ");out center tags 100;";
+  if (includeLights) {
+    q += 'node["highway"="street_lamp"]' + near(600) + ";out 400;" +
+         'way["highway"]["lit"="yes"]' + near(600) + ";out geom 200;";
+  }
+  return q;
+}
+
+// Decide what kind of place this is from its OpenStreetMap tags
+function describePlace(tags) {
+  const a = tags.amenity;
+  if (a === "police")       return { code: "P",  cls: "pin-police",   type: "Police station" };
+  if (a === "fire_station") return { code: "F",  cls: "pin-fire",     type: "Fire station" };
+  if (a === "hospital")     return { code: "H",  cls: "pin-hospital", type: "Hospital" };
+  if (a === "fuel")         return { code: "G",  cls: "pin-store",    type: "24-hour gas station" };
+  if (a === "pharmacy")     return { code: "Rx", cls: "pin-store",    type: "24-hour pharmacy" };
+  if (a === "fast_food" || a === "restaurant" || a === "cafe")
+                            return { code: "R",  cls: "pin-store",    type: "24-hour restaurant" };
+  return { code: "S", cls: "pin-store", type: "24-hour store" };
+}
+
+function makeSpot(tags, pLat, pLng, lat, lng) {
+  const info = describePlace(tags);
+  const street = tags["addr:street"]
+    ? ((tags["addr:housenumber"] || "") + " " + tags["addr:street"]).trim() : "";
+  return {
+    name: tags.name || info.type, type: info.type, code: info.code, cls: info.cls,
+    address: street, lat: pLat, lng: pLng,
+    km: distanceKm(lat, lng, pLat, pLng)
+  };
+}
+
+// Turn the raw server answer into a list of safe spots
+function parseSpots(elements, lat, lng) {
+  const found = [];
+  for (const el of elements) {
+    if (!el.tags || !(el.tags.amenity || el.tags.shop)) continue;   // skip lamps and roads
+    // Points have lat/lon; buildings and areas have a "center"
+    const pLat = el.lat ?? (el.center && el.center.lat);
+    const pLng = el.lon ?? (el.center && el.center.lon);
+    if (pLat == null || pLng == null) continue;
+    found.push(makeSpot(el.tags, pLat, pLng, lat, lng));
+  }
+  return found;
+}
+
+// Fast source: ask Nominatim (the address search
+// service) for police stations, fire stations, and hospitals in a box
+// about 5 km around you. These are always staffed, day and night.
+async function backupSpots(lat, lng) {
+  const d = 0.05;
+  const box = (lng - d) + "," + (lat + d) + "," + (lng + d) + "," + (lat - d);
+  const kinds = [["police", "police"], ["fire station", "fire_station"], ["hospital", "hospital"]];
+  const found = [];
+  let anyWorked = false;
+  for (const [words, amenity] of kinds) {
+    try {
+      const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&bounded=1" +
+                  "&viewbox=" + box + "&q=" + encodeURIComponent(words);
+      const results = await fetchWithTimeout(url, { headers: { "Accept-Language": "en" } }, 10000);
+      anyWorked = true;
+      for (const r of results) {
+        if (r.type !== amenity) continue;   // skip things like "Police Street"
+        found.push(makeSpot({ amenity: amenity, name: r.name }, parseFloat(r.lat), parseFloat(r.lon), lat, lng));
+      }
+    } catch (e) { /* try the next kind */ }
+    await sleep(1100);   // Nominatim asks for at most one request per second
+  }
+  // Nothing from Nominatim? Try Photon, another free OpenStreetMap search service.
+  if (found.length === 0) {
+    for (const [words, amenity] of kinds) {
+      try {
+        const url = "https://photon.komoot.io/api/?limit=10&lang=en&q=" + encodeURIComponent(words) +
+                    "&lat=" + lat + "&lon=" + lng + "&osm_tag=amenity:" + amenity;
+        const data = await fetchWithTimeout(url, {}, 10000);
+        anyWorked = true;
+        for (const f of data.features || []) {
+          const pLat = f.geometry.coordinates[1], pLng = f.geometry.coordinates[0];
+          if (distanceKm(lat, lng, pLat, pLng) > 8) continue;   // only places within about 5 miles
+          found.push(makeSpot({ amenity: amenity, name: (f.properties || {}).name }, pLat, pLng, lat, lng));
+        }
+      } catch (e) { /* try the next kind */ }
+    }
+  }
+  if (!anyWorked) throw new Error("Search services unreachable");
+  return found;
+}
+
+// Show spots in the list and on the map. "done" is false while
+// more results are still on the way.
+function showSpots(found, done) {
+  // Remove duplicates: same name within about 200 meters
+  const unique = [];
+  for (const s of found) {
+    const dup = unique.some(u => u.name === s.name && distanceKm(u.lat, u.lng, s.lat, s.lng) < 0.2);
+    if (!dup) unique.push(s);
+  }
+  spots = unique.sort((x, y) => x.km - y.km);   // closest first
+  if (spots.length > 0) drawSpots();
+  if (spots.length === 0 && !done) return;   // keep the "loading" message
+  if (spots.length === 0) {
+    setStatus("spotStatus", "No safe spots were found nearby right now. Stay on busy, lit streets and call 911 in an emergency. Tap \"Use my current location\" to try again.");
+    return;
+  }
+  setStatus("spotStatus", "Found " + spots.length + " real safe spot" + (spots.length === 1 ? "" : "s") + " nearby." +
+    (done ? "" : " Still loading 24-hour stores..."));
+}
+
+let areaRequestId = 0;     // ignores old answers if the user moves before they arrive
+let routeWhenReady = false; // "Route me" was pressed while spots were loading
+
+// Load safe spots from two public sources AT THE SAME TIME:
+//  1. Nominatim (fast, a few seconds): police, fire stations, hospitals
+//  2. Overpass (slower, can be busy): 24/7 stores, gas, pharmacies + street lights
+// Whichever answers first shows up first, and the lists are combined.
+async function loadArea() {
+  const myRequest = ++areaRequestId;
+  const lat = userLat, lng = userLng;
+  spotLayer.clearLayers();
+  lightLayer.clearLayers();
+  routeLayer.clearLayers();
+  spots = [];
+  document.getElementById("spotList").innerHTML = "";
+  setStatus("spotStatus", "Loading real safe spots near you...");
+  setStatus("lightStatus", "Loading street light data...");
+
+  let collected = [];
+  const stillCurrent = () => myRequest === areaRequestId;
+
+  const fast = backupSpots(lat, lng)
+    .then(list => {
+      if (!stillCurrent()) return;
+      collected = collected.concat(list);
+      showSpots(collected, false);
+      afterSpotsArrive();
+    })
+    .catch(() => {});
+
+  // Street lights first: a small, quick request of their own
+  lightData = { lamps: [], segs: [], loaded: false };
+  const lightsP = loadLights(lat, lng, stillCurrent);
+
+  const full = overpass(areaQuery(lat, lng, 3500, false))
+    .then(data => {
+      if (!stillCurrent()) return;
+      collected = collected.concat(parseSpots(data.elements, lat, lng));
+      showSpots(collected, false);
+      afterSpotsArrive();
+    })
+    .catch(() => {});
+
+  await Promise.allSettled([fast, lightsP, full]);
+  if (!stillCurrent()) return;
+  showSpots(collected, true);
+  afterSpotsArrive();
+}
+
+// If the user pressed "Route me" early, route as soon as we have a spot
+function afterSpotsArrive() {
+  if (routeWhenReady && spots.length > 0) {
+    routeWhenReady = false;
+    routeTo(spots[0]);
+  }
+}
+
+function directionsLink(s) {
+  return "https://www.openstreetmap.org/directions?engine=fossgis_osrm_foot&route=" +
+    userLat + "," + userLng + ";" + s.lat + "," + s.lng;
+}
+
+// Draw spots on the map AND in a text list (the list is what screen readers use)
+function drawSpots() {
+  spotLayer.clearLayers();
+  const list = document.getElementById("spotList");
+  list.innerHTML = "";
+  spots.slice(0, 15).forEach((s, i) => {
+    const label = s.name + ", " + s.type;
+    L.marker([s.lat, s.lng], { icon: pinIcon(s.code, s.cls, label), alt: label, keyboard: true })
+      .addTo(spotLayer)
+      .bindPopup("<b>" + escapeHTML(s.name) + "</b><br>" + escapeHTML(s.type) +
+                 "<br>" + kmToMiles(s.km).toFixed(2) + " mi away");
+
+    const li = document.createElement("li");
+    if (i === 0) li.className = "nearest";
+    const walkMin = Math.max(1, Math.round(s.km / 5 * 60));   // walking speed about 5 km/h
+    li.innerHTML =
+      (i === 0 ? "<span class='north-badge'>★ Your North Star</span>" : "") +
+      "<h3><span class='pin inline-pin " + s.cls + "' aria-hidden='true'>" + escapeHTML(s.code) + "</span>" +
+      escapeHTML(s.name) + "</h3>" +
+      "<div>" + escapeHTML(s.type) + (s.address ? " · " + escapeHTML(s.address) : "") + "</div>" +
+      "<div>" + kmToMiles(s.km).toFixed(2) + " miles · about " + walkMin + " min walk</div>";
+    const row = document.createElement("div");
+    row.className = "row";
+    const showBtn = document.createElement("button");
+    showBtn.className = "big outline small";
+    showBtn.textContent = "Show on map";
+    showBtn.setAttribute("aria-label", "Show " + s.name + " on map");
+    showBtn.onclick = () => { map.setView([s.lat, s.lng], 17); document.getElementById("map").scrollIntoView({ behavior: "smooth" }); };
+    const routeBtn = document.createElement("button");
+    routeBtn.className = "big outline small";
+    routeBtn.textContent = "Walking route";
+    routeBtn.setAttribute("aria-label", "Walking route to " + s.name);
+    routeBtn.onclick = () => routeTo(s);
+    row.append(showBtn, routeBtn);
+    li.append(row);
+    list.append(li);
+  });
+}
+
+// =====================================================
+// 6. REAL WALKING ROUTES
+// Uses the free OSRM walking router. If it's down,
+// we fall back to a straight line.
+// =====================================================
+// ---------- Lit-route scoring ----------
+// Converts latitude/longitude into flat x/y meters around one point.
+// (Flat-earth math is accurate enough for a walk of a few miles.)
+function makeToXY(lat0) {
+  const k = Math.cos(lat0 * Math.PI / 180);
+  return (lat, lng) => [lng * 111320 * k, lat * 110540];
+}
+// Shortest distance in meters from point p to the line segment a-b
+function distToSegment(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+// Returns the share of a route (0 to 1) that passes street lights,
+// or null if we have no light data. We check a point every 20 meters:
+// a point counts as "lit" if a street lamp is within 35 m or a road
+// marked lit=yes is within 15 m.
+function litScore(points) {
+  if (!lightData.loaded || (lightData.lamps.length === 0 && lightData.segs.length === 0)) return null;
+  const toXY = makeToXY(points[0][0]);
+  const lamps = lightData.lamps.map(p => toXY(p[0], p[1]));
+  const segs = lightData.segs.map(sg => [toXY(sg[0][0], sg[0][1]), toXY(sg[1][0], sg[1][1])]);
+  const samples = [];
+  for (let i = 1; i < points.length; i++) {
+    const a = toXY(points[i - 1][0], points[i - 1][1]);
+    const b = toXY(points[i][0], points[i][1]);
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 20));
+    for (let j = 0; j < n; j++) samples.push([a[0] + (b[0] - a[0]) * j / n, a[1] + (b[1] - a[1]) * j / n]);
+  }
+  if (samples.length === 0) return null;
+  let lit = 0;
+  for (const p of samples) {
+    if (lamps.some(l => Math.hypot(l[0] - p[0], l[1] - p[1]) < 35) ||
+        segs.some(([a, b]) => distToSegment(p, a, b) < 15)) lit++;
+  }
+  return lit / samples.length;
+}
+
+// Ask the walking router for up to 3 different routes, score each one
+// for street lighting, and choose the brightest route that is no more
+// than 30% longer than the shortest one.
+async function routeTo(s) {
+  routeLayer.clearLayers();
+  setStatus("spotStatus", "Finding the brightest walking route to " + s.name + "...");
+  try {
+    const url = "https://routing.openstreetmap.de/routed-foot/route/v1/foot/" +
+      userLng + "," + userLat + ";" + s.lng + "," + s.lat +
+      "?overview=full&geometries=geojson&alternatives=3";
+    const data = await fetchWithTimeout(url, {}, 15000);
+    const options = data.routes.map(r => ({
+      route: r,
+      points: r.geometry.coordinates.map(c => [c[1], c[0]])   // OSRM gives [lng, lat]
+    }));
+    options.forEach(o => { o.lit = litScore(o.points); });
+    const shortest = Math.min(...options.map(o => o.route.distance));
+
+    let best = options[0];
+    if (best.lit !== null) {
+      for (const o of options) {
+        if (o.route.distance <= shortest * 1.3 && o.lit > best.lit + 0.03) best = o;
+      }
+    }
+
+    // Other routes are drawn faintly; the chosen one glows like starlight
+    for (const o of options) {
+      if (o !== best) L.polyline(o.points, { color: "#8b93b8", weight: 4, opacity: 0.55, dashArray: "6 8" }).addTo(routeLayer);
+    }
+    L.polyline(best.points, { color: "#f7e7a6", weight: 14, opacity: 0.25 }).addTo(routeLayer);
+    const line = L.polyline(best.points, { color: "#fff3c4", weight: 5 }).addTo(routeLayer);
+    map.fitBounds(line.getBounds(), { padding: [40, 40] });
+
+    const miles = kmToMiles(best.route.distance / 1000).toFixed(2);
+    const mins = Math.max(1, Math.round(best.route.duration / 60));
+    let msg = "Route to " + s.name + ": " + miles + " miles, about " + mins + " minutes walking.";
+    if (best.lit === null) {
+      msg += " Street light data isn't loaded here yet, so this is the shortest route.";
+    } else {
+      msg += " About " + Math.round(best.lit * 100) + "% of this walk passes street lights";
+      if (best !== options[0]) {
+        msg += ", so North Star chose it over a shorter route that is only " + Math.round(options[0].lit * 100) + "% lit.";
+      } else if (options.length > 1) {
+        msg += ", the brightest of " + options.length + " routes checked.";
+      } else {
+        msg += ".";
+      }
+    }
+    setStatus("spotStatus", msg);
+    speak(msg);
+  } catch (e) {
+    const line = L.polyline([[userLat, userLng], [s.lat, s.lng]],
+      { color: "#a5b4fc", weight: 5, dashArray: "8 8" }).addTo(routeLayer);
+    map.fitBounds(line.getBounds(), { padding: [40, 40] });
+    setStatus("spotStatus", "Routing service unavailable, so the dashed line shows the direction to " + s.name + ".");
+  }
+  const link = document.createElement("a");
+  link.href = directionsLink(s);
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = " Open full directions →";
+  document.getElementById("spotStatus").append(link);
+}
+
+function routeToNearest() {
+  if (userLat === null) {
+    setStatus("spotStatus", "Set your location first.");
+    return;
+  }
+  if (spots.length === 0) {
+    routeWhenReady = true;
+    setStatus("spotStatus", "Still finding safe spots. Your route will appear as soon as the first one loads.");
+    return;
+  }
+  routeTo(spots[0]);
+}
+document.getElementById("nearestBtn").onclick = routeToNearest;
+
+// =====================================================
+// 7. REAL STREET LIGHTS (OpenStreetMap)
+// Street lamps are tagged highway=street_lamp, and
+// roads with lighting are tagged lit=yes. Routes use this
+// data to choose the brightest way to walk.
+// =====================================================
+let lightData = { lamps: [], segs: [], loaded: false };
+
+// A small request just for street lights (about 1 mile around you),
+// tried twice before giving up.
+async function loadLights(lat, lng, stillCurrent) {
+  setStatus("lightStatus", "Loading street light data...");
+  const near = "(around:1500," + lat + "," + lng + ")";
+  const query = "[out:json][timeout:20];" +
+    'node["highway"="street_lamp"]' + near + ";out skel 2000;" +
+    'way["highway"]["lit"="yes"]' + near + ";out geom 600;";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const data = await overpass(query);
+      if (!stillCurrent()) return;
+      drawLights(data.elements);
+      return;
+    } catch (e) {
+      if (!stillCurrent()) return;
+      if (attempt === 1) {
+        setStatus("lightStatus", "The street light server is busy. Trying again...");
+        await sleep(2000);
+      }
+    }
+  }
+  setStatus("lightStatus", "The street light server is busy right now. Routes still work, just without the lighting check. Tap \"Use my current location\" in a minute to try again.");
+}
+
+function drawLights(elements) {
+  lightLayer.clearLayers();
+  lightData = { lamps: [], segs: [], loaded: true };
+  for (const el of elements) {
+    if (el.type === "node" && (!el.tags || el.tags.highway === "street_lamp")) {
+      L.circleMarker([el.lat, el.lon], {
+        radius: 3, color: "#f7e7a6", fillColor: "#f7e7a6", fillOpacity: 0.9, weight: 1
+      }).addTo(lightLayer);
+      lightData.lamps.push([el.lat, el.lon]);
+    } else if (el.type === "way" && el.geometry && el.tags && el.tags.lit === "yes") {
+      const pts = el.geometry.map(p => [p.lat, p.lon]);
+      L.polyline(pts, { color: "#f7e7a6", weight: 4, opacity: 0.45 }).addTo(lightLayer);
+      for (let i = 1; i < pts.length; i++) lightData.segs.push([pts[i - 1], pts[i]]);
+    }
+  }
+  const lamps = lightData.lamps.length;
+  const roads = elements.filter(el => el.type === "way").length;
+  setStatus("lightStatus", lamps === 0 && roads === 0
+    ? "No street light data has been mapped here yet. Anyone can add it at openstreetmap.org."
+    : "Showing " + lamps + " street lamps and " + roads + " lit road sections within about a mile. Walking routes now favor these lit streets.");
+}
+
+document.getElementById("showLights").onchange = e => {
+  if (e.target.checked) lightLayer.addTo(map);
+  else map.removeLayer(lightLayer);
+};
+
+// =====================================================
+// 8. BROKEN STREETLIGHT REPORTS + LETTER TO THE CITY
+// =====================================================
+let reports = load("nl_reports", []);
+
+function drawReports() {
+  reportLayer.clearLayers();
+  for (const r of reports) {
+    L.marker([r.lat, r.lng], { icon: pinIcon("×", "pin-report", "Broken streetlight"), alt: "Broken streetlight" })
+      .addTo(reportLayer)
+      .bindPopup("Broken streetlight<br>Reported " + new Date(r.time).toLocaleString());
+  }
+  setStatus("reportCount", "You've reported " + reports.length + " broken light" + (reports.length === 1 ? "" : "s") + ".");
+}
+
+function addReport(lat, lng) {
+  reports.push({ lat: lat, lng: lng, time: Date.now() });
+  save("nl_reports", reports);
+  drawReports();
+}
+
+function writeLetter() {
+  const area = document.getElementById("letterArea");
+  if (reports.length === 0) {
+    area.innerHTML = "<p role='alert'>Report at least one broken light first.</p>";
+    return;
+  }
+  let list = "";
+  reports.forEach((r, i) => {
+    list += (i + 1) + ". Near " + r.lat.toFixed(5) + ", " + r.lng.toFixed(5) +
+            " (map: https://www.openstreetmap.org/?mlat=" + r.lat.toFixed(5) + "&mlon=" + r.lng.toFixed(5) + "), " +
+            "reported " + new Date(r.time).toLocaleDateString() + "\n";
+  });
+  const letter =
+    "Dear City Public Works Department,\n\n" +
+    "I am writing to report " + reports.length + " broken streetlight" + (reports.length === 1 ? "" : "s") +
+    " in my neighborhood. Dark streets make people feel unsafe walking at night, " +
+    "especially students and seniors.\n\nLocations:\n" + list +
+    "\nPlease repair these lights as soon as possible. Thank you for helping keep our community safe.\n\n" +
+    "Sincerely,\n[Your name]";
+  area.innerHTML = "<label for='letterText'>Your letter (copy it and send it to your city)</label>" +
+                   "<textarea id='letterText'></textarea>" +
+                   "<button class='big' id='copyBtn'>Copy letter</button>";
+  document.getElementById("letterText").value = letter;
+  document.getElementById("copyBtn").onclick = async () => {
+    const t = document.getElementById("letterText");
+    try { await navigator.clipboard.writeText(t.value); }
+    catch (e) { t.select(); document.execCommand("copy"); }
+    document.getElementById("copyBtn").textContent = "Copied!";
+  };
+  document.getElementById("letterText").focus();
+}
+
+document.getElementById("letterBtn").onclick = writeLetter;
+document.getElementById("reportHereBtn").onclick = () => {
+  if (userLat === null) { setStatus("reportCount", "Set your location first."); return; }
+  addReport(userLat, userLng);
+};
+document.getElementById("clearBtn").onclick = () => {
+  reports = [];
+  save("nl_reports", reports);
+  drawReports();
+  document.getElementById("letterArea").innerHTML = "";
+};
+
+// =====================================================
+// 9. MAP TAPS: set location or report a light
+// =====================================================
+function setMode(mode) {
+  mapMode = mode;
+  const locBtn = document.getElementById("setLocBtn");
+  const repBtn = document.getElementById("reportModeBtn");
+  locBtn.setAttribute("aria-pressed", mode === "setLocation");
+  repBtn.setAttribute("aria-pressed", mode === "report");
+  locBtn.textContent = mode === "setLocation" ? "Now tap your spot on the map" : "Tap the map to set my location";
+  repBtn.textContent = mode === "report" ? "Tap where the light is (press here to stop)" : "Tap the map to report a broken light";
+}
+
+map.on("click", e => {
+  if (mapMode === "setLocation") {
+    setUserLocation(e.latlng.lat, e.latlng.lng, "Location set by tapping the map.");
+    setMode("none");
+  } else if (mapMode === "report") {
+    addReport(e.latlng.lat, e.latlng.lng);
+  }
+});
+document.getElementById("setLocBtn").onclick = () => setMode(mapMode === "setLocation" ? "none" : "setLocation");
+document.getElementById("reportModeBtn").onclick = () => setMode(mapMode === "report" ? "none" : "report");
+
+// =====================================================
+// 10. CHECK-IN TIMER
+// =====================================================
+let endTime = null;
+let tickInterval = null;
+let watchId = null;
+let alertShown = false;
+let warnedOneMinute = false;
+
+const savedFriend = load("nl_friend", {});
+document.getElementById("friendName").value = savedFriend.name || "";
+document.getElementById("friendPhone").value = savedFriend.phone || "";
+
+function showCheckinPanel(which) {
+  document.getElementById("checkinSetup").hidden = which !== "setup";
+  document.getElementById("checkinRunning").hidden = which !== "running";
+  document.getElementById("checkinDone").hidden = which !== "done";
+}
+
+function startTimer(minutes) {
+  const name = document.getElementById("friendName").value.trim();
+  const phone = document.getElementById("friendPhone").value.trim();
+  const errorBox = document.getElementById("formError");
+  // Phone must have at least 7 digits
+  if (name === "" || phone.replace(/\D/g, "").length < 7) {
+    errorBox.textContent = "Please enter your friend's name and a valid phone number.";
+    (name === "" ? document.getElementById("friendName") : document.getElementById("friendPhone")).focus();
+    return;
+  }
+  errorBox.textContent = "";
+  save("nl_friend", { name: name, phone: phone });
+  endTime = Date.now() + minutes * 60 * 1000;
+  save("nl_endTime", endTime);
+  beginRunning();
+  if (minutes <= 1) warnedOneMinute = true;   // short demo walks skip the one-minute warning
+  speak("Timer started. Walk safe.");
+}
+
+function beginRunning() {
+  alertShown = false;
+  warnedOneMinute = false;
+  document.getElementById("alertArea").innerHTML = "";
+  const f = load("nl_friend", {});
+  document.getElementById("runningText").textContent =
+    "If you don't check in, " + (f.name || "your friend") + " will be alerted in:";
+  showCheckinPanel("running");
+  document.getElementById("homeBtn").focus();
+
+  // Keep updating your location while you walk
+  if (navigator.geolocation && watchId === null) {
+    watchId = navigator.geolocation.watchPosition(
+      pos => {
+        userLat = pos.coords.latitude;
+        userLng = pos.coords.longitude;
+        if (userMarker) userMarker.setLatLng([userLat, userLng]);
+      },
+      () => {},
+      { enableHighAccuracy: true }
+    );
+  }
+  clearInterval(tickInterval);
+  tickInterval = setInterval(tick, 1000);
+  tick();
+}
+
+function tick() {
+  const msLeft = endTime - Date.now();
+  if (msLeft <= 0) {
+    document.getElementById("timerDisplay").textContent = "00:00";
+    if (!alertShown) timeIsUp();
+    return;
+  }
+  const totalSec = Math.ceil(msLeft / 1000);
+  const minsLeft = Math.floor(totalSec / 60);
+  const mm = String(minsLeft).padStart(2, "0");
+  const ss = String(totalSec % 60).padStart(2, "0");
+  document.getElementById("timerDisplay").textContent = mm + ":" + ss;
+
+  // Screen readers hear the time once a minute instead of every second
+  if (totalSec % 60 === 0 || document.getElementById("timerSR").textContent === "") {
+    document.getElementById("timerSR").textContent =
+      minsLeft > 0 ? minsLeft + " minute" + (minsLeft === 1 ? "" : "s") + " left" : totalSec + " seconds left";
+  }
+  // One-minute warning so a forgotten check-in doesn't scare your friend
+  if (totalSec <= 60 && !warnedOneMinute) {
+    warnedOneMinute = true;
+    try { if (navigator.vibrate) navigator.vibrate(300); } catch (e) {}
+    speak("One minute left. Tap I'm home safe if you made it.");
+  }
+}
+
+function lastLocationLink() {
+  if (userLat === null) return "(location unavailable)";
+  return "https://www.openstreetmap.org/?mlat=" + userLat.toFixed(5) + "&mlon=" + userLng.toFixed(5) +
+         "#map=18/" + userLat.toFixed(5) + "/" + userLng.toFixed(5);
+}
+
+function timeIsUp() {
+  alertShown = true;
+  const f = load("nl_friend", {});
+  try { if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) {}
+  speak("Time is up. Tap send alert to text " + (f.name || "your friend") + ", or tap I'm safe.");
+
+  const message =
+    "NORTH STAR ALERT: I was walking home and didn't check in on time. " +
+    "Please call me or check on me. My last location: " + lastLocationLink();
+
+  // "sms:" links open the phone's texting app with the message already filled in
+  const smsLink = "sms:" + (f.phone || "").replace(/[^\d+]/g, "") + "?body=" + encodeURIComponent(message);
+
+  const area = document.getElementById("alertArea");
+  area.innerHTML =
+    "<div class='alert-box'>" +
+    "<h3>Time's up! Alert for <span id='alertName'></span></h3>" +
+    "<div class='msg-preview' id='alertMsg'></div>" +
+    "<a class='big-link' id='smsLink'>Send alert text now</a>" +
+    "<a class='big-link' href='tel:911' style='background:#7f1d1d'>Call 911</a>" +
+    "<button class='big green' id='safeBtn'>I'm safe, cancel</button>" +
+    "<p class='muted'>The button opens your texting app with the message ready to send.</p>" +
+    "</div>";
+  document.getElementById("alertName").textContent = f.name || "your friend";
+  document.getElementById("alertMsg").textContent = message;
+  document.getElementById("smsLink").href = smsLink;
+  document.getElementById("safeBtn").onclick = arrivedHome;
+  document.getElementById("smsLink").focus();
+}
+
+function arrivedHome() {
+  clearInterval(tickInterval);
+  if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  endTime = null;
+  save("nl_endTime", null);
+  document.getElementById("timerSR").textContent = "";
+  showCheckinPanel("done");
+  speak("Glad you made it home.");
+  document.getElementById("newWalkBtn").focus();
+}
+
+document.getElementById("startBtn").onclick = () =>
+  startTimer(parseFloat(document.getElementById("minutes").value));
+document.getElementById("homeBtn").onclick = arrivedHome;
+document.getElementById("extendBtn").onclick = () => {
+  endTime = Math.max(endTime, Date.now()) + 5 * 60 * 1000;
+  save("nl_endTime", endTime);
+  alertShown = false;
+  warnedOneMinute = false;
+  document.getElementById("alertArea").innerHTML = "";
+  tick();
+  speak("Added five minutes.");
+};
+document.getElementById("newWalkBtn").onclick = () => showCheckinPanel("setup");
+document.getElementById("nearestFromTimer").onclick = () => { showTab("safe"); routeToNearest(); };
+
+// =====================================================
+// 11. ACCESSIBLE TABS
+// Left/right arrow keys move between tabs, like a
+// screen reader user expects.
+// =====================================================
+const tabNames = ["checkin", "safe", "report"];
+
+function showTab(name) {
+  for (const t of tabNames) {
+    const selected = t === name;
+    document.getElementById("tab-" + t).hidden = !selected;
+    const btn = document.getElementById("tabbtn-" + t);
+    btn.setAttribute("aria-selected", selected);
+    btn.tabIndex = selected ? 0 : -1;
+  }
+}
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.onclick = () => showTab(btn.dataset.tab);
+  btn.onkeydown = e => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const i = tabNames.indexOf(btn.dataset.tab);
+    const next = tabNames[(i + (e.key === "ArrowRight" ? 1 : tabNames.length - 1)) % tabNames.length];
+    showTab(next);
+    document.getElementById("tabbtn-" + next).focus();
+  };
+});
+
+// =====================================================
+// 12. START UP
+// =====================================================
+drawReports();
+useGPS();
+
+// If a walk was in progress when the page closed, pick it back up
+const savedEnd = load("nl_endTime", null);
+if (savedEnd) {
+  endTime = savedEnd;
+  beginRunning();
+}
+</script>
+</body>
+</html>
