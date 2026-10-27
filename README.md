@@ -33,3 +33,9 @@ Text from outside data sources is sanitized before display to prevent cross-site
 Served over HTTPS on GitHub Pages, with the map library hosted inside the project.
 
 To find nearby places and routes, your general location is sent to the public OpenStreetMap services listed below. It isn't linked to a name or account.
+
+Credits
+
+Map data © OpenStreetMap contributors, available under the Open Database License. Map tiles © Esri. Leaflet © Vladimir Agafonkin and contributors (BSD 2-Clause License).
+
+North Star is a helper, not an emergency service. If you are in danger, call 911.
